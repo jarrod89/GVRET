@@ -26,6 +26,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
  */
+#define MEM 1
 
 #include "GVRET.h"
 #include "config.h"
@@ -64,9 +65,13 @@ uint8_t digTogglePinCounter;
 //there is only one checksum check for all of them so it's simple to do it all here.
 void loadSettings()
 {
+	#ifdef MEM
     EEPROM.read(EEPROM_PAGE, settings);
 
     if (settings.version != EEPROM_VER) { //if settings are not the current version then erase them and set defaults
+	#else
+	if (1) { //load defaults
+	#endif
         Logger::console("Resetting to factory defaults");
         settings.version = EEPROM_VER;
         settings.appendFile = false;
@@ -106,21 +111,28 @@ void loadSettings()
         settings.singleWireMode = 0; //normal mode
         settings.CAN0ListenOnly = false;
         settings.CAN1ListenOnly = false;
+		#ifdef MEM
         EEPROM.write(EEPROM_PAGE, settings);
+		#endif
     } else {
         Logger::console("Using stored values from EEPROM");
     }
-
+	#ifdef MEM
     EEPROM.read(EEPROM_PAGE + 1, digToggleSettings);
     if (digToggleSettings.mode == 255) {
+	#else 
+	if (1) {
+	#endif
         Logger::console("Resetting digital toggling system to defaults");
-        digToggleSettings.enabled = false;
-        digToggleSettings.length = 0;
-        digToggleSettings.mode = 0;
-        digToggleSettings.pin = 1;
-        digToggleSettings.rxTxID = 0x700;
+        digToggleSettings.enabled = true;
+        digToggleSettings.length = 8; //set to zero for toggle function. set to 8 to use first byte to set pin state.
+        digToggleSettings.mode = 0x01 & 0x08 & 0x80; //enable & toggle on replay data & initialise low
+        digToggleSettings.pin = 7;
+        digToggleSettings.rxTxID = 0x101;
         for (int c=0 ; c<8 ; c++) digToggleSettings.payload[c] = 0;
+		#ifdef MEM
         EEPROM.write(EEPROM_PAGE + 1, digToggleSettings);
+		#endif
     } else {
         Logger::console("Using stored values for digital toggling system");
     }
@@ -230,13 +242,15 @@ void setup()
     digitalWrite(ENABLE_PASS_1TO0_PIN, HIGH); // enable pull-up resistor
 
     Serial.begin(115200);
+	#ifdef MEM
     Wire.begin();
     EEPROM.setWPPin(18); // a guess...
-
+	#endif
     loadSettings();
 
+	#ifdef MEM
     EEPROM.setWPPin(SysSettings.eepromWPPin);
-
+	#endif
     if (SysSettings.useSD) {
         if (!sd.begin(SysSettings.SDCardSelPin, SPI_FULL_SPEED)) {
             Logger::error("Could not initialize SDCard! No file logging will be possible!");
@@ -473,7 +487,7 @@ void processDigToggleFrame(CAN_FRAME &frame)
         if (digToggleSettings.length == 0) gotFrame = true;
         else {
             gotFrame = true;
-            for (int c = 0; c < digToggleSettings.length; c++) {
+            for (int c = 1; c < digToggleSettings.length; c++) {
                 if (digToggleSettings.payload[c] != frame.data.byte[c]) {
                     gotFrame = false;
                     break;
@@ -484,8 +498,19 @@ void processDigToggleFrame(CAN_FRAME &frame)
 
     if (gotFrame) { //then toggle output pin
         Logger::console("Got special digital toggle frame. Toggling the output!");
-        digitalWrite(digToggleSettings.pin, digTogglePinState?LOW:HIGH);
-        digTogglePinState = !digTogglePinState;
+		if(digToggleSettings.length == 0) { 
+			digitalWrite(digToggleSettings.pin, digTogglePinState?LOW:HIGH);
+			digTogglePinState = !digTogglePinState;
+		}
+		else {
+		if(digToggleSettings.payload[0] == 0) {
+			digitalWrite(digToggleSettings.pin, LOW);
+			digTogglePinState = 0;
+		} else if(digToggleSettings.payload[0] == 1) {
+			digitalWrite(digToggleSettings.pin, HIGH);
+			digTogglePinState = 1;
+		}
+		}
     }
 }
 
@@ -772,6 +797,10 @@ void loop()
                     }
                     if (out_bus == 0) Can0.sendFrame(build_out_frame);
                     if (out_bus == 1) Can1.sendFrame(build_out_frame);
+					if (digToggleSettings.enabled && (digToggleSettings.mode & 1) && (digToggleSettings.mode & 0x08)) {
+						processDigToggleFrame(build_out_frame);
+						}
+			
 
                     if (settings.singleWireMode == 1) {
                         if (build_out_frame.id == 0x100) {
@@ -888,7 +917,9 @@ void loop()
                 }
                 state = IDLE;
                 //now, write out the new canbus settings to EEPROM
+				#ifdef MEM
                 EEPROM.write(EEPROM_PAGE, settings);
+				#endif
                 setPromiscuousMode();
                 break;
             }
@@ -902,12 +933,16 @@ void loop()
                 settings.singleWireMode = false;
                 setSWCANSleep();
             }
+			#ifdef MEM
             EEPROM.write(EEPROM_PAGE, settings);
+			#endif
             state = IDLE;
             break;
         case SET_SYSTYPE:
             settings.sysType = in_byte;
+			#ifdef MEM
             EEPROM.write(EEPROM_PAGE, settings);
+			#endif
             loadSettings();
             state = IDLE;
             break;
